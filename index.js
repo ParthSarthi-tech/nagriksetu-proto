@@ -1,16 +1,26 @@
 import express from 'express';
 import pkg from 'pg';
 import cors from 'cors';
+import multer from 'multer';
 import 'dotenv/config';
 
 const { Pool } = pkg;
 const app = express();
 
-// Middleware
-app.use(cors());
+// Initialize Multer to handle image uploads in memory
+// This prevents the "empty body" issue when sending files from mobile
+const upload = multer();
+
+// --- Middleware ---
+// Configured to allow your mobile phone to bypass browser security
+app.use(cors({
+    origin: '*', 
+    methods: ['GET', 'POST'],
+    allowedHeaders: ['Content-Type']
+}));
 app.use(express.json());
 
-// Database Connection
+// --- Database Connection ---
 const pool = new Pool({
     user: process.env.DB_USER,
     host: process.env.DB_HOST,
@@ -21,17 +31,33 @@ const pool = new Pool({
 
 // --- ROUTES ---
 
-// 1. Report an Issue (With Spatial De-duplication)
-app.post('/api/report', async (req, res) => {
+/**
+ * 1. Report an Issue
+ * Receives data from mobile, checks for duplicates within 10 meters,
+ * and saves to PostGIS.
+ */
+app.post('/api/report', upload.single('image'), async (req, res) => {
+    // LOGGING: See exactly what the phone sent
+    console.log("-----------------------------------------");
+    console.log("📥 NEW REQUEST RECEIVED");
+    console.log("Body Data:", req.body);
+    
+    if (req.file) {
+        console.log("📸 Image Attached:", req.file.originalname, `(${req.file.size} bytes)`);
+    } else {
+        console.log("⚠️ No image received.");
+    }
+
     const { category, description, lat, lng } = req.body;
 
-    // Basic validation
+    // Validation
     if (!category || !lat || !lng) {
+        console.log("❌ REJECTED: Missing fields (lat, lng, or category)");
         return res.status(400).json({ error: "Missing required fields: category, lat, or lng" });
     }
 
     try {
-        // Step A: Check if a similar report exists within 10 meters
+        // Step A: Spatial De-duplication (Check 10m radius)
         const duplicateCheck = await pool.query(
             `SELECT id FROM civic_tickets 
              WHERE category = $1 
@@ -45,7 +71,7 @@ app.post('/api/report', async (req, res) => {
         );
 
         if (duplicateCheck.rows.length > 0) {
-            // Step B: Duplicate found -> Increment the count
+            console.log("🔄 DUPLICATE: Incrementing report count for ID:", duplicateCheck.rows[0].id);
             const ticketId = duplicateCheck.rows[0].id;
             const updated = await pool.query(
                 'UPDATE civic_tickets SET report_count = report_count + 1 WHERE id = $1 RETURNING id, report_count',
@@ -57,22 +83,28 @@ app.post('/api/report', async (req, res) => {
             });
         }
 
-        // Step C: No duplicate -> Create new ticket
+        // Step B: Create New Ticket
+        console.log("🆕 CREATING NEW TICKET...");
         const newTicket = await pool.query( 
             `INSERT INTO civic_tickets (category, description, location) 
              VALUES ($1, $2, ST_SetSRID(ST_MakePoint($3, $4), 4326)) 
              RETURNING id, category, status, report_count`,
-            [category, description, lng, lat]
+            [category, description || 'Mobile Report', lng, lat]
         );
 
+        console.log("✅ SUCCESS: Ticket created with ID:", newTicket.rows[0].id);
         res.status(201).json(newTicket.rows[0]);
+
     } catch (err) {
-        console.error('Error saving report:', err);
+        console.error('🔥 DATABASE ERROR:', err.message);
         res.status(500).json({ error: 'Database error' });
     }
 });
 
-// 2. Get all tickets (Formatted for Map markers)
+/**
+ * 2. Get All Tickets
+ * Used by the map to display markers.
+ */
 app.get('/api/tickets', async (req, res) => {
     try {
         const result = await pool.query(
@@ -87,8 +119,16 @@ app.get('/api/tickets', async (req, res) => {
     }
 });
 
-// Start Server
+// --- Start Server ---
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
-    console.log(`🚀 NagrikSetu Backend running on http://localhost:${PORT}`);
+// We listen on '0.0.0.0' so it's accessible to other devices on the Wi-Fi
+app.listen(PORT, '0.0.0.0', () => {
+    console.log(`
+    🚀 NagrikSetu Backend is LIVE!
+    -----------------------------------------
+    Local:   http://localhost:${PORT}
+    Network: http://10.241.58.226:${PORT}
+    -----------------------------------------
+    Listening for mobile reports...
+    `);
 });
