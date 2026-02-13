@@ -46,7 +46,7 @@ function App() {
   const [isReopening, setIsReopening] = useState(false);
   const mapRef = useRef(null);
 
-  const BACKEND = "http://localhost:5000";
+  const BACKEND = import.meta.env.VITE_API_URL || "http://localhost:5000";
   const provider = new OpenStreetMapProvider();
 
   useEffect(() => { fetchReports(); }, []);
