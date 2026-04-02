@@ -33,6 +33,25 @@ function getDistance(lat1, lon1, lat2, lon2) {
     return R * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a)));
 }
 
+// Generate a token from the admin password (no extra packages needed)
+function makeToken(password) {
+  return Buffer.from(password + ':nagriksetu-admin-v1').toString('base64');
+}
+
+// Middleware to protect admin routes
+function requireAdmin(req, res, next) {
+  const authHeader = req.headers['authorization'];
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  const token = authHeader.slice(7);
+  const expected = makeToken(process.env.ADMIN_PASSWORD || 'admin123');
+  if (token !== expected) {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+  next();
+}
+
 app.use(cors());
 app.use(express.json());
 app.use('/uploads', express.static(uploadDir));
@@ -42,6 +61,17 @@ const storage = multer.diskStorage({
   filename: (req, file, cb) => cb(null, Date.now() + path.extname(file.originalname))
 });
 const upload = multer({ storage });
+
+// POST: Admin login
+app.post('/api/admin/login', (req, res) => {
+  const { password } = req.body;
+  const adminPassword = process.env.ADMIN_PASSWORD || 'admin123';
+  if (!password || password !== adminPassword) {
+    return res.status(401).json({ error: 'Invalid password' });
+  }
+  const token = makeToken(adminPassword);
+  res.json({ token });
+});
 
 // POST: Report with Re-report Counter Logic
 app.post('/api/report', upload.single('image'), async (req, res) => {
@@ -63,7 +93,6 @@ app.post('/api/report', upload.single('image'), async (req, res) => {
         return res.status(409).json({ message: "Duplicate", duplicateId: duplicate.id });
     }
 
-    // Set reopen_count to 1 if the citizen used the "Raise Issue" shortcut
     const reopenVal = isReopen === 'true' ? 1 : 0;
 
     const result = await pool.query(
@@ -85,10 +114,11 @@ app.post('/api/report/:id/vote', async (req, res) => {
   res.json({ success: true });
 });
 
-app.post('/api/report/:id/status', async (req, res) => {
+// PROTECTED: Only admins can change status
+app.post('/api/report/:id/status', requireAdmin, async (req, res) => {
   const { status } = req.body;
   await pool.query('UPDATE civic_tickets SET status = $1 WHERE id = $2', [status, req.params.id]);
   res.json({ success: true });
 });
 
-app.listen(5000, () => console.log(`🚀 Server on http://localhost:5000`));
+app.listen(process.env.PORT || 5000, () => console.log(`🚀 Server on port ${process.env.PORT || 5000}`));
