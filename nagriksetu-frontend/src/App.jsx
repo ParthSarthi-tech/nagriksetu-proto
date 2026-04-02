@@ -12,6 +12,9 @@ import mShadow from "leaflet/dist/images/marker-shadow.png";
 let DefIcon = L.icon({ iconUrl: mIcon, shadowUrl: mShadow, iconSize: [25, 41], iconAnchor: [12, 41] });
 L.Marker.prototype.options.icon = DefIcon;
 
+// Use environment variable for backend URL - works on Vercel pointing to Render
+const BACKEND = import.meta.env.VITE_API_URL || "http://localhost:5000";
+
 // Force map to recalculate size when switching views
 function MapResizer() {
   const map = useMap();
@@ -35,19 +38,70 @@ function LocationPicker({ setAddress }) {
   return null;
 }
 
+// Admin Login Modal Component
+function AdminLoginModal({ onClose, onSuccess }) {
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const handleLogin = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    setError("");
+    try {
+      const res = await axios.post(`${BACKEND}/api/admin/login`, { password });
+      sessionStorage.setItem("nagriksetu_admin_token", res.data.token);
+      onSuccess(res.data.token);
+    } catch (err) {
+      setError("Invalid password. Try again.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="admin-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="admin-modal-header">
+          <div className="admin-modal-icon">🛡️</div>
+          <h2>Admin Access</h2>
+          <p>NagrikSetu Municipal Panel</p>
+        </div>
+        <form onSubmit={handleLogin} className="admin-modal-form">
+          <div className="admin-input-wrap">
+            <input
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="Enter admin password"
+              autoFocus
+            />
+          </div>
+          {error && <div className="admin-error">{error}</div>}
+          <button type="submit" disabled={loading || !password} className="admin-login-btn">
+            {loading ? "Verifying..." : "Login →"}
+          </button>
+        </form>
+        <button className="modal-close-btn" onClick={onClose}>✕</button>
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const [view, setView] = useState("map");
-  const [isAdmin, setIsAdmin] = useState(false);
+  const [adminToken, setAdminToken] = useState(() => sessionStorage.getItem("nagriksetu_admin_token") || null);
+  const [showLoginModal, setShowLoginModal] = useState(false);
   const [category, setCategory] = useState("Pothole");
   const [image, setImage] = useState(null);
   const [address, setAddress] = useState("Move map to pinpoint...");
   const [allReports, setAllReports] = useState([]);
-  const [searchQuery, setSearchQuery] = useState(""); 
+  const [searchQuery, setSearchQuery] = useState("");
   const [isReopening, setIsReopening] = useState(false);
   const mapRef = useRef(null);
 
-  const BACKEND = import.meta.env.VITE_API_URL || "http://localhost:5000";
   const provider = new OpenStreetMapProvider();
+  const isAdmin = !!adminToken;
 
   useEffect(() => { fetchReports(); }, []);
 
@@ -64,8 +118,30 @@ function App() {
   };
 
   const updateStatus = async (id, status) => {
-    await axios.post(`${BACKEND}/api/report/${id}/status`, { status });
-    fetchReports();
+    try {
+      await axios.post(
+        `${BACKEND}/api/report/${id}/status`,
+        { status },
+        { headers: { Authorization: `Bearer ${adminToken}` } }
+      );
+      fetchReports();
+    } catch (err) {
+      if (err.response?.status === 401 || err.response?.status === 403) {
+        // Token expired or invalid - log out
+        handleLogout();
+        alert("Session expired. Please log in again.");
+      }
+    }
+  };
+
+  const handleLogout = () => {
+    sessionStorage.removeItem("nagriksetu_admin_token");
+    setAdminToken(null);
+  };
+
+  const handleAdminLoginSuccess = (token) => {
+    setAdminToken(token);
+    setShowLoginModal(false);
   };
 
   const handleSearch = async (e) => {
@@ -110,11 +186,27 @@ function App() {
 
   return (
     <div className="modern-app">
+      {showLoginModal && (
+        <AdminLoginModal
+          onClose={() => setShowLoginModal(false)}
+          onSuccess={handleAdminLoginSuccess}
+        />
+      )}
+
       <header className="glass-nav">
         <h1>NagrikSetu</h1>
-        <button className={`admin-pill ${isAdmin ? "on" : ""}`} onClick={() => setIsAdmin(!isAdmin)}>
-          {isAdmin ? "Admin: ON" : "Admin Login"}
-        </button>
+        <div className="nav-admin-area">
+          {isAdmin ? (
+            <div className="admin-active-bar">
+              <span className="admin-badge">🛡️ Admin Mode</span>
+              <button className="admin-logout-btn" onClick={handleLogout}>Logout</button>
+            </div>
+          ) : (
+            <button className="admin-pill" onClick={() => setShowLoginModal(true)}>
+              Admin Login
+            </button>
+          )}
+        </div>
       </header>
 
       <div className="content-shell">
@@ -143,7 +235,7 @@ function App() {
           ) : (
             <div className="dashboard-scroll">
               <div className="dashboard-header">
-                <h2>Live Insights</h2>
+                <h2>Live Insights {isAdmin && <span className="admin-dashboard-tag">· Admin View</span>}</h2>
               </div>
               <div className="report-grid">
                 {allReports.map(r => (
